@@ -9,9 +9,11 @@ from logic.validator import validate_url, check_https_ssl
 from logic.whois_checker import check_domain_age
 from logic.pattern_checker import check_patterns
 from logic.content_checker import check_content_trust
-from logic.blacklist_checker import check_blacklist
+from logic.blacklist_checker import check_blacklist, force_reload_blacklist
 from logic.scorer import calculate_risk_score
 from logic.dns_checker import check_dns_records
+from logic.updater import update_blacklist_source
+
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -49,7 +51,7 @@ def analyze_url():
 
     # Extract hostname for blacklist/whois
     parsed = urlparse(valid_url)
-    hostname = parsed.netloc
+    hostname = parsed.hostname  # Handles ports (e.g., example.com:8080 -> example.com)
 
     # 2. Parallel Checks
     # HTTPS Check
@@ -112,6 +114,37 @@ def analyze_url():
     }
 
     return jsonify(result), 200
+
+
+
+
+
+
+@app.route("/api/blacklist/update", methods=["POST"])
+def trigger_blacklist_update():
+    """
+    Manually triggers a blacklist update from URLhaus.
+    """
+    try:
+        # Run update synchronously for now (or could use a thread if it takes too long)
+        # For a manual trigger, the user might want to wait for confirmation.
+        result = update_blacklist_source()
+        
+        if result.get("success"):
+            # Force reload the blacklist in the running app
+            force_reload_blacklist()
+            
+            return jsonify({
+                "message": "Blacklist updated successfully",
+                "stats": result
+            }), 200
+        else:
+            return jsonify({
+                "error": "Failed to update blacklist",
+                "details": result.get("error")
+            }), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":

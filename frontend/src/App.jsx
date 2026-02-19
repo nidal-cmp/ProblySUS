@@ -3,6 +3,7 @@ import axios from 'axios'
 import UrlInput from './components/UrlInput'
 import AnalysisResult from './metrics/AnalysisResult'
 import AntigravityParams from './components/AntigravityParams'
+import BlacklistControl from './components/BlacklistControl'
 import './index.css'
 
 function App() {
@@ -50,6 +51,8 @@ function App() {
         {result && (
           <AnalysisResult data={result} />
         )}
+
+        <BlacklistControl />
       </div>
     </AntigravityParams>
   )

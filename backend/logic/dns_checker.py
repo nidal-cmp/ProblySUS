@@ -1,5 +1,6 @@
 import dns.resolver
 import logging
+import tldextract
 
 logger = logging.getLogger(__name__)
 
@@ -14,15 +15,24 @@ def check_dns_records(domain):
         "details": []
     }
 
+    # Extract registered domain (e.g., "youtube.com" from "www.youtube.com")
+    # MX records are usually on the root domain.
+    extracted = tldextract.extract(domain)
+    registered_domain = f"{extracted.domain}.{extracted.suffix}"
+    
+    # If extraction fails (e.g. localhost), fallback to original
+    target_domain = registered_domain if registered_domain and "." in registered_domain else domain
+
     try:
         # 1. MX Record Check
         # Real businesses need to receive email. Scams often don't set this up.
-        mx_records = dns.resolver.resolve(domain, 'MX')
+        # Check on registered domain to avoid failures on subdomains (e.g. www.)
+        mx_records = dns.resolver.resolve(target_domain, 'MX')
         if mx_records:
             results["mx_records"] = True
-            results["details"].append(f"Found {len(mx_records)} MX records")
+            results["details"].append(f"Found {len(mx_records)} MX records for {target_domain}")
     except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.LifetimeTimeout):
-        results["details"].append("No MX records found (Suspicious: Cannot receive email)")
+        results["details"].append(f"No MX records found for {target_domain}")
     except Exception as e:
         logger.error(f"MX check failed for {domain}: {e}")
 

@@ -51,6 +51,14 @@ def load_blacklist():
 # Initial load
 load_blacklist()
 
+def force_reload_blacklist():
+    """
+    Forces a reload of the blacklist data.
+    """
+    global LAST_LOADED
+    LAST_LOADED = 0
+    load_blacklist()
+
 
 def check_blacklist(hostname):
     """
@@ -84,13 +92,39 @@ def check_blacklist(hostname):
             "risk_level": "Safe",
         }
 
-    if hostname in BLACKLIST_DB:
-        entry = BLACKLIST_DB[hostname]
-        return {
-            "listed": True,
-            "category": entry.get("category", "Uncategorized"),
-            "source": entry.get("source", "Unknown"),
-            "risk_level": entry.get("risk_level", "High"),
-        }
+    # Generate variations to check
+    # 1. Exact match
+    # 2. Root domain (e.g. sub.example.com -> example.com)
+    # 3. WWW variation (example.com -> www.example.com)
+    # 4. Non-WWW variation (www.example.com -> example.com)
+    
+    variations = {hostname}
+    
+    # Handle www
+    if hostname.startswith("www."):
+        variations.add(hostname[4:])
+    else:
+        variations.add(f"www.{hostname}")
+    
+    # Handle subdomains (simple approach: check parent)
+    parts = hostname.split(".")
+    if len(parts) > 2:
+        # Check potentially the root domain (assuming 2-part TLDs or 1-part is handled loosely here)
+        # For a robust solution we'd use tldextract, but let's try a simple heuristic first
+        # to avoid overhead if possible, or just check the last 2, last 3 parts.
+        # Let's check the last 2 parts (example.com) and last 3 parts (co.uk case)
+        variations.add(".".join(parts[-2:]))
+        variations.add(".".join(parts[-3:]))
+
+    for variant in variations:
+        if variant in BLACKLIST_DB:
+            entry = BLACKLIST_DB[variant]
+            return {
+                "listed": True,
+                "category": entry.get("category", "Uncategorized"),
+                "source": entry.get("source", "Unknown"),
+                "risk_level": entry.get("risk_level", "High"),
+                "matched_on": variant
+            }
 
     return {"listed": False, "category": None, "source": None, "risk_level": None}

@@ -16,6 +16,10 @@ def validate_url(url):
     try:
         result = urlparse(url)
         if all([result.scheme, result.netloc]):
+             # hostname should not contain spaces
+            if " " in result.netloc:
+                 return None, "Invalid URL format: Hostname contains spaces"
+            
             return url, None
         return None, "Invalid URL format"
     except Exception:
