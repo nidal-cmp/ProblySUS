@@ -4,3 +4,5 @@ requests
 python-whois
 beautifulsoup4
 tldextract
+dnspython
+textstat

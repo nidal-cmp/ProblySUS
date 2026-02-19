@@ -1,13 +1,17 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import logging
+import datetime
+from urllib.parse import urlparse
+
+# Logic Modules
 from logic.validator import validate_url, check_https_ssl
 from logic.whois_checker import check_domain_age
 from logic.pattern_checker import check_patterns
 from logic.content_checker import check_content_trust
 from logic.blacklist_checker import check_blacklist
 from logic.scorer import calculate_risk_score
-from urllib.parse import urlparse
+from logic.dns_checker import check_dns_records
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -16,6 +20,15 @@ CORS(app)  # Enable CORS for all routes
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+@app.route("/", methods=["GET"])
+def index():
+    return jsonify({
+        "status": "running",
+        "service": "ProblySUS Request Scanner",
+        "version": "1.0.0"
+    }), 200
 
 
 @app.route("/analyze", methods=["POST"])
@@ -38,19 +51,21 @@ def analyze_url():
     parsed = urlparse(valid_url)
     hostname = parsed.netloc
 
-    # 2. Parallel Checks (Conceptually, for now sequential)
-
+    # 2. Parallel Checks
     # HTTPS Check
     is_https, https_details = check_https_ssl(valid_url)
 
     # WHOIS Check
     age_days, creation_date = check_domain_age(hostname)
 
+    # DNS Check (New)
+    dns_results = check_dns_records(hostname)
+
     # Pattern Check
     patterns = check_patterns(valid_url)
 
-    # Content Check
-    trust_pages = check_content_trust(valid_url)
+    # Content Check (Enhanced)
+    content_analysis = check_content_trust(valid_url)
 
     # Blacklist Check
     is_blacklisted = check_blacklist(hostname)
@@ -61,7 +76,8 @@ def analyze_url():
         "domain_age": age_days,
         "https_valid": is_https,
         "patterns": patterns,
-        "trust_pages": trust_pages,
+        "content_analysis": content_analysis,
+        "dns_analysis": dns_results,
     }
 
     score, label, reasons = calculate_risk_score(check_results)
@@ -73,7 +89,7 @@ def analyze_url():
         "label": label,
         "recommendation": (
             "Proceed with caution"
-            if label == "Suspicious"
+            if label == "Suspicious" or label == "Caution"
             else ("Avoid this site" if label == "Fraudulent" else "Safe to visit")
         ),
         "reasons": reasons,
@@ -81,7 +97,6 @@ def analyze_url():
             "https": is_https,
             "domainAgeDays": age_days,
             "suspiciousPatterns": any(patterns.values()),
-            "trustPagesFound": trust_pages,
             "blacklisted": (
                 is_blacklisted.get("listed", False)
                 if isinstance(is_blacklisted, dict)
@@ -89,8 +104,11 @@ def analyze_url():
             ),
             "blacklistDetails": is_blacklisted,
             "creationDate": creation_date,
+            "mxRecords": dns_results.get("mx_records", False),
+            "urgencyScore": content_analysis.get("urgency_score", 0),
+            "trustPages": content_analysis.get("trust_pages", []),
         },
-        "timestamp": "2026-02-05T10:30:00Z",  # TODO: Use real timestamp
+        "timestamp": datetime.datetime.now().isoformat(),
     }
 
     return jsonify(result), 200

@@ -7,92 +7,98 @@ def calculate_risk_score(check_results):
     reasons = []
 
     # Unpack results
-    blacklist = check_results.get("blacklist", False)
+    blacklist = check_results.get("blacklist", {})
     domain_age = check_results.get("domain_age", 0)
     https_valid = check_results.get("https_valid", True)
     patterns = check_results.get("patterns", {})
-    trust_pages = check_results.get("trust_pages", [])
+    
+    # New Signals
+    content_analysis = check_results.get("content_analysis", {})
+    dns_analysis = check_results.get("dns_analysis", {})
+    
+    trust_score = 50 # Start neutral
 
-    # 1. Blacklist Check
-    blacklist_info = check_results.get("blacklist", {})
-    # Handle both old boolean check and new dict check
+    # --- 1. BLACKLIST CHECK (The Hammer) ---
     is_listed = (
-        blacklist_info.get("listed", False)
-        if isinstance(blacklist_info, dict)
-        else blacklist_info
+        blacklist.get("listed", False)
+        if isinstance(blacklist, dict)
+        else blacklist
     )
 
     if is_listed:
-        if isinstance(blacklist_info, dict):
-            risk = blacklist_info.get("risk_level", "High")
-            category = blacklist_info.get("category", "Unknown")
-
-            if risk == "Critical":
-                score += 50
-                reasons.append(f"Domain is blacklisted (Critical Risk: {category})")
-            elif risk == "High":
-                score += 40
-                reasons.append(f"Domain is blacklisted ({category})")
-            else:
-                score += 20
-                reasons.append(f"Domain is blacklisted (Potential {category})")
+        risk_level = blacklist.get("risk_level", "High")
+        if risk_level == "Critical":
+            score = 100
+            reasons.append(f"⛔ CRITICAL: Domain is blacklisted ({blacklist.get('category', 'Malware')})")
+            return score, "Fraudulent", reasons
         else:
-            # Fallback for old boolean format
-            score += 40
-            reasons.append("Domain is blacklisted")
+            score += 50
+            reasons.append(f"⚠️ Domain is on a blocklist ({blacklist.get('category', 'Suspicious')})")
 
-    # 2. Domain Age Check
-    # < 30 days -> +25
-    # < 180 days -> +10 (Medium risk logic adjustment)
+    # --- 2. TECHNICAL DNA (DNS/MX) ---
+    # Most legit businesses have MX records.
+    if not dns_analysis.get("mx_records", False):
+        score += 30
+        reasons.append("⚠️ No Email Servers (MX Records) found. Real businesses usually have email.")
+    else:
+        trust_score += 10 # Legit signal
+
+    # --- 3. DOMAIN AGE ---
     if domain_age != -1:
         if domain_age < 30:
             score += 25
-            reasons.append("Domain is very new (< 1 month)")
+            reasons.append("⚠️ Domain is extremely new (< 1 month)")
         elif domain_age < 180:
             score += 10
-            reasons.append("Domain is relatively new (< 6 months)")
-    # Optional: Add small penalty for unknown age? For MVP, ignore.
+            reasons.append("ℹ️ Domain is relatively new (< 6 months)")
+        else:
+            trust_score += 20 # Aged domain is trustworthy
 
-    # 3. HTTPS Check (+20)
+    # --- 4. CONTENT ANALYSIS (NLP) ---
+    urgency = content_analysis.get("urgency_score", 0)
+    sensitive = content_analysis.get("has_sensitive_keywords", False)
+    bad_link_ratio = content_analysis.get("external_link_ratio", 0) > 0.8 # Mostly external links
+
+    if urgency > 2:
+        score += 15
+        reasons.append(f"⚠️ High-pressure language detected ({urgency} urgency keywords)")
+    
+    if sensitive and not https_valid:
+        score += 40
+        reasons.append("⛔ CRITICAL: Asking for sensitive info (Password/Credit Card) without SSL!")
+    elif sensitive:
+        score += 5
+        reasons.append("ℹ️ Page requests sensitive information")
+
+    if bad_link_ratio:
+        score += 10
+        reasons.append("⚠️ Suspicious Link Profile (Mostly external/login links)")
+
+    # --- 5. PATTERNS & HTTPS ---
     if not https_valid:
         score += 20
-        reasons.append("Website does not use a valid HTTPS connection")
-
-    # 4. Suspicious Patterns (+10-15)
-    if patterns.get("keywords"):
-        score += 15
-        reasons.append(f"Suspicious keywords found: {', '.join(patterns['keywords'])}")
-
-    if patterns.get("hyphens"):
-        score += 10
-        reasons.append("Domain name contains excessive hyphens")
-
-    if patterns.get("suspicious_tld"):
-        score += 10
-        reasons.append("Domain uses a potentially risky TLD")
+        reasons.append("⚠️ Not using HTTPS")
 
     if patterns.get("ip_based"):
-        score += 15
-        reasons.append("URL is IP-based (often used in phishing)")
-
-    # 5. Trust Pages (+5-10 per missing page, max 20?)
-    # Logic: Missing trust pages increases risk.
-    required_pages = ["privacy", "terms", "contact", "about"]
-    missing_pages = [page for page in required_pages if page not in trust_pages]
-
-    if len(missing_pages) > 2:
+        score += 20
+        reasons.append("⚠️ IP-based URL (Typical for phishing)")
+    
+    if patterns.get("suspicious_tld"):
         score += 10
-        reasons.append("Missing multiple trust pages (Privacy, Terms, etc.)")
+        reasons.append("⚠️ Potentially risky TLD (.xyz, .tk, etc.)")
 
-    # Clamp score
+    # --- FINAL CALCULATION ---
+    # Cap score
     score = min(100, score)
 
     # Determine Label
-    if score <= 30:
-        label = "Safe"
-    elif score <= 70:
-        label = "Suspicious"
-    else:
+    if score >= 80:
         label = "Fraudulent"
-
+    elif score >= 50:
+        label = "Suspicious"
+    elif score >= 20:
+        label = "Caution"
+    else:
+        label = "Safe"
+    
     return score, label, reasons
