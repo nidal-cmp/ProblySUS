@@ -13,20 +13,21 @@ const BlacklistControl = () => {
 
         try {
             const response = await axios.post('http://localhost:5000/api/blacklist/update')
+            const stats = response.data.stats
+            const total = stats.total_count?.toLocaleString() ?? stats.added_count
+            const ts = new Date(stats.timestamp).toLocaleTimeString()
             setStatus('success')
-            setMessage(`Updated! Added ${response.data.stats.added_count} new domains.`)
+            setMessage(`✅ Threat DB updated at ${ts} — ${total} domains in database.`)
+            // Auto-dismiss success after 6 seconds
+            setTimeout(() => {
+                setStatus(null)
+                setMessage('')
+            }, 6000)
         } catch (err) {
             setStatus('error')
-            setMessage(err.response?.data?.details || "Update failed.")
+            setMessage(err.response?.data?.details || err.response?.data?.error || 'Update failed. Check server connection.')
         } finally {
             setUpdating(false)
-            // Clear success message after a few seconds
-            if (status !== 'error') {
-                setTimeout(() => {
-                    setStatus(null)
-                    setMessage('')
-                }, 5000)
-            }
         }
     }
 

@@ -1,22 +1,6 @@
 import json
 import os
-
-
-def load_blacklist():
-    """
-    Loads the blacklist from the JSON file.
-    """
-    try:
-        # Construct path relative to this file
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        data_path = os.path.join(current_dir, "..", "data", "blacklist_sources.json")
-
-        with open(data_path, "r") as f:
-            data = json.load(f)
-            return data.get("domains", {})
-    except Exception as e:
-        print(f"Error loading blacklist: {e}")
-        return {}
+import tldextract
 
 
 # Cache the blacklist in memory
@@ -42,7 +26,12 @@ def load_blacklist():
             # print(f"Reloading blacklist data (changed at {mtime})")
             with open(data_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                BLACKLIST_DB = data.get("domains", {})
+                # Merge both sources: auto-indexed entries take priority over custom.
+                # This ensures custom_domains are actually queried at runtime.
+                BLACKLIST_DB = {
+                    **data.get("custom_domains", {}),
+                    **data.get("domains", {}),
+                }
                 LAST_LOADED = mtime
     except Exception as e:
         print(f"Error loading blacklist: {e}")
@@ -106,15 +95,25 @@ def check_blacklist(hostname):
     else:
         variations.add(f"www.{hostname}")
     
-    # Handle subdomains (simple approach: check parent)
-    parts = hostname.split(".")
-    if len(parts) > 2:
-        # Check potentially the root domain (assuming 2-part TLDs or 1-part is handled loosely here)
-        # For a robust solution we'd use tldextract, but let's try a simple heuristic first
-        # to avoid overhead if possible, or just check the last 2, last 3 parts.
-        # Let's check the last 2 parts (example.com) and last 3 parts (co.uk case)
-        variations.add(".".join(parts[-2:]))
-        variations.add(".".join(parts[-3:]))
+    # Use tldextract to correctly identify the registered root domain.
+    # Then walk UP the subdomain chain from the full hostname to the registered root,
+    # checking every level. This ensures that if URLhaus indexed any ancestor of
+    # the queried hostname (e.g. darkmoon.in.net when user checks
+    # hiddenside.darkmoon.in.net), it will still be caught.
+    ext = tldextract.extract(hostname)
+    if ext.domain and ext.suffix:
+        registered = f"{ext.domain}.{ext.suffix}"
+        # Build the chain: full hostname → parent → … → registered root
+        # e.g. hiddenside.darkmoon.in.net → darkmoon.in.net → (stop, registered=darkmoon.in.net)
+        parts = hostname.split(".")
+        registered_parts = registered.split(".")
+        # Walk from full hostname down to registered root (inclusive)
+        while len(parts) >= len(registered_parts):
+            candidate = ".".join(parts)
+            variations.add(candidate)
+            variations.add(f"www.{candidate}")
+            parts = parts[1:]  # Strip leftmost subdomain label
+
 
     for variant in variations:
         if variant in BLACKLIST_DB:

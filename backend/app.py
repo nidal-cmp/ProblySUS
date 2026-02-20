@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import logging
+import threading
 import datetime
 from urllib.parse import urlparse
 
@@ -14,7 +15,6 @@ from logic.scorer import calculate_risk_score
 from logic.dns_checker import check_dns_records
 from logic.updater import update_blacklist_source
 
-
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
@@ -23,13 +23,74 @@ CORS(app)  # Enable CORS for all routes
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Constants
+MAX_URL_LENGTH = 2048
 
+
+# -----------------------------------------------------------------------
+# Background blacklist auto-updater
+# Runs once 5 seconds after startup, then repeats every 24 hours.
+# This ensures the DB is always fresh without manual intervention.
+# -----------------------------------------------------------------------
+def _auto_update_blacklist():
+    """
+    Fetches the latest blacklist in the background and reloads it into memory.
+    Reschedules itself every 24 hours.
+    """
+    try:
+        result = update_blacklist_source()
+        if result.get("success"):
+            force_reload_blacklist()
+            logger.info(
+                f"[Auto-Update] Blacklist refreshed: "
+                f"{result['added_count']} domains indexed "
+                f"({result['custom_count']} custom)."
+            )
+        else:
+            logger.warning(f"[Auto-Update] Blacklist update failed: {result.get('error')}")
+    except Exception as e:
+        logger.error(f"[Auto-Update] Unexpected error during blacklist update: {e}", exc_info=True)
+    finally:
+        # Reschedule for 24 hours later regardless of success/failure
+        timer = threading.Timer(86400, _auto_update_blacklist)
+        timer.daemon = True  # Don't block process exit
+        timer.start()
+
+
+# Kick off the first update shortly after startup (non-blocking)
+_startup_timer = threading.Timer(5, _auto_update_blacklist)
+_startup_timer.daemon = True
+_startup_timer.start()
+
+
+# -----------------------------------------------------------------------
+# Global error handler — always return JSON, never HTML stack traces
+# -----------------------------------------------------------------------
+@app.errorhandler(Exception)
+def handle_unexpected_error(e):
+    logger.error(f"Unhandled exception: {e}", exc_info=True)
+    return jsonify({"error": "An unexpected server error occurred. Please try again."}), 500
+
+
+@app.errorhandler(404)
+def handle_404(e):
+    return jsonify({"error": "Endpoint not found"}), 404
+
+
+@app.errorhandler(405)
+def handle_405(e):
+    return jsonify({"error": "Method not allowed"}), 405
+
+
+# -----------------------------------------------------------------------
+# Routes
+# -----------------------------------------------------------------------
 @app.route("/", methods=["GET"])
 def index():
     return jsonify({
         "status": "running",
-        "service": "ProblySUS Request Scanner",
-        "version": "1.0.0"
+        "service": "Probly URL Scanner",
+        "version": "1.1.0"
     }), 200
 
 
@@ -38,41 +99,39 @@ def analyze_url():
     """
     Analyze a given URL for scam risk.
     """
-    data = request.get_json()
+    data = request.get_json(silent=True)
     if not data or "url" not in data:
-        return jsonify({"error": "URL is required"}), 400
+        return jsonify({"error": "Request body must be JSON with a 'url' field"}), 400
 
     url = data["url"]
+
+    # --- Input guards ---
+    if not isinstance(url, str):
+        return jsonify({"error": "URL must be a string"}), 400
+
+    if len(url) > MAX_URL_LENGTH:
+        return jsonify({"error": f"URL exceeds maximum length of {MAX_URL_LENGTH} characters"}), 400
 
     # 1. Validation
     valid_url, error = validate_url(url)
     if not valid_url:
         return jsonify({"error": error}), 400
 
-    # Extract hostname for blacklist/whois
+    # Extract hostname — guard against None (e.g. file:// or malformed URLs)
     parsed = urlparse(valid_url)
-    hostname = parsed.hostname  # Handles ports (e.g., example.com:8080 -> example.com)
+    hostname = parsed.hostname
+    if not hostname:
+        return jsonify({"error": "Could not extract a valid hostname from the URL"}), 400
 
-    # 2. Parallel Checks
-    # HTTPS Check
+    # 2. Run all checks
     is_https, https_details = check_https_ssl(valid_url)
-
-    # WHOIS Check
     age_days, creation_date = check_domain_age(hostname)
-
-    # DNS Check (New)
     dns_results = check_dns_records(hostname)
-
-    # Pattern Check
     patterns = check_patterns(valid_url)
-
-    # Content Check (Enhanced)
     content_analysis = check_content_trust(valid_url)
-
-    # Blacklist Check
     is_blacklisted = check_blacklist(hostname)
 
-    # 3. Validation & Scoring
+    # 3. Score
     check_results = {
         "blacklist": is_blacklisted,
         "domain_age": age_days,
@@ -84,21 +143,31 @@ def analyze_url():
 
     score, label, reasons = calculate_risk_score(check_results)
 
+    # Recommendation text
+    if label in ("Suspicious", "Caution"):
+        recommendation = "Proceed with caution"
+    elif label == "Fraudulent":
+        recommendation = "Avoid this site — it has been flagged as dangerous"
+    else:
+        recommendation = "Safe to visit"
+
     result = {
         "url": valid_url,
         "hostname": hostname,
         "riskScore": score,
         "label": label,
-        "recommendation": (
-            "Proceed with caution"
-            if label == "Suspicious" or label == "Caution"
-            else ("Avoid this site" if label == "Fraudulent" else "Safe to visit")
-        ),
+        "recommendation": recommendation,
         "reasons": reasons,
         "checks": {
             "https": is_https,
+            "httpsDetails": https_details,
             "domainAgeDays": age_days,
-            "suspiciousPatterns": any(patterns.values()),
+            "suspiciousPatterns": any([
+                patterns.get("ip_based"),
+                patterns.get("suspicious_tld"),
+                patterns.get("hyphens"),
+                bool(patterns.get("keywords")),
+            ]),
             "blacklisted": (
                 is_blacklisted.get("listed", False)
                 if isinstance(is_blacklisted, dict)
@@ -107,17 +176,15 @@ def analyze_url():
             "blacklistDetails": is_blacklisted,
             "creationDate": creation_date,
             "mxRecords": dns_results.get("mx_records", False),
+            "spfRecord": dns_results.get("spf_record", False),
             "urgencyScore": content_analysis.get("urgency_score", 0),
             "trustPages": content_analysis.get("trust_pages", []),
+            "contentReachable": content_analysis.get("reachable", False),
         },
         "timestamp": datetime.datetime.now().isoformat(),
     }
 
     return jsonify(result), 200
-
-
-
-
 
 
 @app.route("/api/blacklist/update", methods=["POST"])
@@ -126,14 +193,10 @@ def trigger_blacklist_update():
     Manually triggers a blacklist update from URLhaus.
     """
     try:
-        # Run update synchronously for now (or could use a thread if it takes too long)
-        # For a manual trigger, the user might want to wait for confirmation.
         result = update_blacklist_source()
-        
+
         if result.get("success"):
-            # Force reload the blacklist in the running app
             force_reload_blacklist()
-            
             return jsonify({
                 "message": "Blacklist updated successfully",
                 "stats": result
@@ -144,6 +207,7 @@ def trigger_blacklist_update():
                 "details": result.get("error")
             }), 500
     except Exception as e:
+        logger.error(f"Blacklist update error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 
