@@ -5,7 +5,7 @@ import threading
 import datetime
 from urllib.parse import urlparse
 
-# Logic Modules
+# Logic Modules — Original
 from logic.validator import validate_url, check_https_ssl
 from logic.whois_checker import check_domain_age
 from logic.pattern_checker import check_patterns
@@ -14,6 +14,12 @@ from logic.blacklist_checker import check_blacklist, force_reload_blacklist
 from logic.scorer import calculate_risk_score
 from logic.dns_checker import check_dns_records
 from logic.updater import update_blacklist_source
+
+# Logic Modules — New Analyzers
+from logic.behavior_checker import analyze_behavior
+from logic.tracker_checker import detect_trackers
+from logic.network_checker import analyze_network
+from logic.privacy_checker import analyze_privacy
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -98,6 +104,7 @@ def index():
 def analyze_url():
     """
     Analyze a given URL for scam risk.
+    Runs 10 analysis modules and returns a composite risk assessment.
     """
     data = request.get_json(silent=True)
     if not data or "url" not in data:
@@ -123,7 +130,7 @@ def analyze_url():
     if not hostname:
         return jsonify({"error": "Could not extract a valid hostname from the URL"}), 400
 
-    # 2. Run all checks
+    # 2. Run original checks
     is_https, https_details = check_https_ssl(valid_url)
     age_days, creation_date = check_domain_age(hostname)
     dns_results = check_dns_records(hostname)
@@ -131,7 +138,33 @@ def analyze_url():
     content_analysis = check_content_trust(valid_url)
     is_blacklisted = check_blacklist(hostname)
 
-    # 3. Score
+    # 3. Run new analyzer modules
+    logger.info(f"Running extended analysis for {hostname}...")
+
+    # Behavior analysis (headless browser — redirect/network monitoring)
+    behavior_result = analyze_behavior(valid_url)
+
+    # Fetch HTML once for tracker + privacy analysis (re-use content_checker's fetch)
+    html_content = None
+    try:
+        import requests as req_lib
+        resp = req_lib.get(valid_url, timeout=8, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        }, verify=True, allow_redirects=True)
+        html_content = resp.text
+    except Exception as fetch_err:
+        logger.warning(f"Could not fetch HTML for extended analysis: {fetch_err}")
+
+    # Tracker detection
+    tracker_result = detect_trackers(html_content or "")
+
+    # Network intelligence (processes behavior_checker output)
+    network_result = analyze_network(behavior_result)
+
+    # Privacy analysis
+    privacy_result = analyze_privacy(valid_url, html_content=html_content)
+
+    # 4. Combine all results for scoring
     check_results = {
         "blacklist": is_blacklisted,
         "domain_age": age_days,
@@ -139,6 +172,10 @@ def analyze_url():
         "patterns": patterns,
         "content_analysis": content_analysis,
         "dns_analysis": dns_results,
+        "behavior": behavior_result,
+        "network": network_result,
+        "trackers": tracker_result,
+        "privacy": privacy_result,
     }
 
     score, label, reasons = calculate_risk_score(check_results)
@@ -158,6 +195,7 @@ def analyze_url():
         "label": label,
         "recommendation": recommendation,
         "reasons": reasons,
+        # Backward-compatible checks object (existing frontend)
         "checks": {
             "https": is_https,
             "httpsDetails": https_details,
@@ -180,6 +218,13 @@ def analyze_url():
             "urgencyScore": content_analysis.get("urgency_score", 0),
             "trustPages": content_analysis.get("trust_pages", []),
             "contentReachable": content_analysis.get("reachable", False),
+        },
+        # Extended analysis data (new frontend panels)
+        "analysis": {
+            "behavior": behavior_result,
+            "trackers": tracker_result,
+            "network": network_result,
+            "privacy": privacy_result,
         },
         "timestamp": datetime.datetime.now().isoformat(),
     }

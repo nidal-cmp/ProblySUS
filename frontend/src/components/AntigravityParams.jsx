@@ -226,21 +226,23 @@ const AntigravityParams = ({ children }) => {
 
     return (
         <div
-            className="relative min-h-screen w-full overflow-hidden bg-black text-white selection:bg-white selection:text-black"
+            className="relative min-h-screen w-full bg-black text-white selection:bg-white selection:text-black"
             onMouseMove={handleMouseMove}
         >
-            {/* Background Stars (Parallax only) */}
-            <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden">
+            {/* Background Stars (Parallax only) — fixed so they persist while scrolling */}
+            <div className="fixed inset-0 z-0 pointer-events-none overflow-hidden">
                 {Array.from({ length: 300 }).map((_, i) => (
-                    <BackgroundStar key={`bg-star-${i}`} index={i} mouseX={mouseX} mouseY={mouseY} /> // Corrected key and passed props
+                    <BackgroundStar key={`bg-star-${i}`} index={i} mouseX={mouseX} mouseY={mouseY} />
                 ))}
             </div>
 
-            {/* Comets Layer */}
-            <Comet />
+            {/* Comets Layer — fixed */}
+            <div className="fixed inset-0 z-0 pointer-events-none overflow-hidden">
+                <Comet />
+            </div>
 
-            {/* Interactive Stars (Foreground) - Pure Repulsion */}
-            <div className="absolute inset-0 z-0 pointer-events-none">
+            {/* Interactive Stars (Foreground) — fixed */}
+            <div className="fixed inset-0 z-0 pointer-events-none overflow-hidden">
                 {Array.from({ length: 200 }).map((_, i) => (
                     <InteractiveStar key={`fg-star-${i}`} mouseX={mouseX} mouseY={mouseY} />
                 ))}

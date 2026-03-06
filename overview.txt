@@ -1,0 +1,66 @@
+ProblySUS — Scam Detection Web App
+====================================
+
+A full-stack application that analyzes website URLs for potential scam risks,
+providing a comprehensive risk assessment with a score from 0-100 and labels
+like Safe, Suspicious, or Fraudulent.
+
+
+Architecture
+------------
+  Backend  : Python / Flask        | Entry: backend/app.py   (port 5000)
+  Frontend : React (Vite) + Framer | Entry: frontend/src/App.jsx (port 5173)
+
+
+Backend (backend/)
+------------------
+
+Routes:
+  GET  /                      Health check / version info
+  POST /analyze               Accepts a URL, runs all checks, returns risk score
+  POST /api/blacklist/update  Manually triggers a blacklist refresh
+
+Analysis Pipeline (logic/):
+  validator.py          Validates & normalizes the URL, checks HTTPS/SSL
+  whois_checker.py      Checks domain age & creation date
+  dns_checker.py        Looks up MX and SPF records
+  pattern_checker.py    Detects suspicious URL patterns (IP-based, bad TLDs, hyphens, phishing keywords)
+  content_checker.py    Scans page content for trust indicators (privacy policy, contact pages, urgency language)
+  blacklist_checker.py  Checks domain against a local threat intelligence database
+  scorer.py             Aggregates all check results into a 0-100 risk score + label
+  updater.py            Downloads fresh blacklist data from URLhaus
+  blacklist_updater.py  Manages blacklist storage and custom entries
+
+Background: Auto-updater refreshes the blacklist from URLhaus every 24 hours.
+
+
+Frontend (frontend/src/)
+------------------------
+
+Components:
+  App.jsx                        Root component, orchestrates the UI
+  components/UrlInput.jsx        URL input form
+  metrics/AnalysisResult.jsx     Displays scan results (risk score, checks, recommendations)
+  components/AntigravityParams.jsx  Detailed check parameters display
+  components/BlacklistControl.jsx   UI button to trigger manual blacklist updates
+
+
+Key Features
+------------
+  - Real-time URL scanning with multi-factor analysis
+  - Risk scoring (0-100) with classification: Safe / Suspicious / Caution / Fraudulent
+  - 7 independent checks: Blacklist, WHOIS, SSL, DNS (MX/SPF), URL patterns, content trust, urgency detection
+  - Auto-updating blacklist from URLhaus (every 24 hours + manual trigger)
+  - Global error handling — always returns JSON, never HTML stack traces
+
+
+Tech Stack
+----------
+  Backend  : Python, Flask, requests, python-whois
+  Frontend : React (Vite), Framer Motion, Axios
+
+
+How to Run
+----------
+  1. Backend:  cd backend  ->  python -m venv venv  ->  venv\Scripts\activate  ->  pip install -r requirements.txt  ->  python app.py
+  2. Frontend: cd frontend ->  npm install  ->  npm run dev
