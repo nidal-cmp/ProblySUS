@@ -9,58 +9,347 @@ like Safe, Suspicious, or Fraudulent.
 Architecture
 ------------
   Backend  : Python / Flask        | Entry: backend/app.py   (port 5000)
-  Frontend : React (Vite) + Framer | Entry: frontend/src/App.jsx (port 5173)
+  Frontend : React (Vite) + Tailwind CSS v4 | Entry: frontend/src/App.jsx (port 5173)
 
 
-Backend (backend/)
-------------------
+================================================================================
+BACKEND ANALYSIS PIPELINE (backend/logic/)
+================================================================================
 
-Routes:
-  GET  /                      Health check / version info
-  POST /analyze               Accepts a URL, runs all checks, returns risk score
-  POST /api/blacklist/update  Manually triggers a blacklist refresh
+Each module is called in sequence by app.py when a POST /analyze request comes
+in. Results are merged and passed to scorer.py to produce the final score.
 
-Analysis Pipeline (logic/):
-  validator.py          Validates & normalizes the URL, checks HTTPS/SSL
-  whois_checker.py      Checks domain age & creation date
-  dns_checker.py        Looks up MX and SPF records
-  pattern_checker.py    Detects suspicious URL patterns (IP-based, bad TLDs, hyphens, phishing keywords)
-  content_checker.py    Scans page content for trust indicators (privacy policy, contact pages, urgency language)
-  blacklist_checker.py  Checks domain against a local threat intelligence database
-  scorer.py             Aggregates all check results into a 0-100 risk score + label
-  updater.py            Downloads fresh blacklist data from URLhaus
-  blacklist_updater.py  Manages blacklist storage and custom entries
+--------------------------------------------------------------------------------
+validator.py
+--------------------------------------------------------------------------------
+  Purpose   : First gate — validates the raw URL before any analysis starts.
+  What it does:
+    - Ensures the URL is syntactically valid (has scheme + hostname)
+    - Normalises missing schemes (adds https://)
+    - Checks whether HTTPS is used and whether the TLS certificate is valid
+      by making a verified HTTPS request (verify=True)
+  Dependencies:
+    - requests       : makes the HTTPS probe to check certificate validity
+    - tldextract     : extracts registered domain and TLD cleanly
+    - urllib.parse   : standard URL parsing (no install needed)
+  Why these:
+    - requests is the standard HTTP library; verify=True triggers cert validation
+    - tldextract handles complex TLDs (e.g. .co.uk) correctly; urlparse alone
+      would split them wrong
 
-Background: Auto-updater refreshes the blacklist from URLhaus every 24 hours.
+--------------------------------------------------------------------------------
+whois_checker.py
+--------------------------------------------------------------------------------
+  Purpose   : Determines how old the domain is. Newly registered domains are a
+              strong scam signal.
+  What it does:
+    - Queries the WHOIS registry for the domain's creation date
+    - Returns domain age in days
+    - Flags domains younger than 30 days as high risk
+  Dependencies:
+    - python-whois   : wraps the WHOIS protocol and parses the raw response
+  Why:
+    - WHOIS data is the only public record of registration date; python-whois
+      abstracts the messy per-registrar format differences
+
+--------------------------------------------------------------------------------
+dns_checker.py
+--------------------------------------------------------------------------------
+  Purpose   : Checks whether the domain has a real mail infrastructure, which
+              legitimate businesses always set up.
+  What it does:
+    - Looks up MX records (mail server) — missing = suspicious
+    - Looks up TXT records to find SPF entries — missing = suspicious
+  Dependencies:
+    - dnspython      : performs DNS queries programmatically
+  Why:
+    - dnspython is the de-facto Python DNS library; raw socket queries would
+      require manual parsing of DNS wire format
+
+--------------------------------------------------------------------------------
+pattern_checker.py
+--------------------------------------------------------------------------------
+  Purpose   : Inspects the URL itself for well-known scam patterns without
+              making any network requests.
+  What it does:
+    - Flags IP-address hostnames (e.g. http://192.168.1.1/login)
+    - Flags abused TLDs (.tk, .ml, .xyz, etc.)
+    - Counts hyphens in domain (many hyphens = phishing pattern)
+    - Checks for phishing keywords in the path (e.g. "paypal", "login", "verify")
+  Dependencies:
+    - re             : standard regex (no install needed)
+    - tldextract     : reliable TLD and registered-domain extraction
+  Why:
+    - Pattern checks are instant and zero-network — they act as a fast pre-filter
+      before heavier checks run
+
+--------------------------------------------------------------------------------
+content_checker.py
+--------------------------------------------------------------------------------
+  Purpose   : Fetches the page HTML and checks for signs of a legitimate
+              business (legal pages, contact info) and red-flag content (urgency
+              language, fake trust seals).
+  What it does:
+    - Requests the page HTML
+    - Searches for links/text matching: Privacy Policy, Terms, Contact, About
+    - Scans for urgency phrases ("limited time", "act now", "verify your account")
+    - Uses textstat to measure reading complexity (very low = auto-generated)
+  Dependencies:
+    - requests        : fetches the page HTML
+    - beautifulsoup4  : parses HTML; finds anchor text and link hrefs
+    - textstat        : computes Flesch reading ease score
+  Why:
+    - BeautifulSoup is the standard Python HTML parser — robust to malformed HTML
+    - textstat wraps Flesch-Kincaid formulas that correlate well with
+      auto-generated / low-quality content
+
+--------------------------------------------------------------------------------
+blacklist_checker.py
+--------------------------------------------------------------------------------
+  Purpose   : Cross-references the domain against a local copy of URLhaus
+              threat intelligence data.
+  What it does:
+    - Strips www. and normalises the hostname
+    - Looks it up in a local CSV-based blacklist (backend/data/)
+    - Returns matched threat category if found (e.g. "malware_download")
+  Dependencies:
+    - csv / zipfile  : parses the URLhaus feed (downloaded as a ZIP)
+    - tldextract     : normalises the hostname before lookup
+  Why:
+    - URLhaus is a community-maintained, free, high-quality threat feed
+    - Local lookup is instant; no third-party API key required
+
+--------------------------------------------------------------------------------
+updater.py  +  blacklist_updater.py
+--------------------------------------------------------------------------------
+  Purpose   : Keeps the local blacklist fresh without manual intervention.
+  What they do:
+    - updater.py          : downloads the latest URLhaus CSV feed (ZIP),
+                            unzips it, and saves data/blacklist.csv
+    - blacklist_updater.py: manages the refresh schedule (every 24 h),
+                            handles custom user-added entries,
+                            and exposes /api/blacklist/update for manual refresh
+  Dependencies:
+    - requests   : downloads the feed ZIP from URLhaus
+    - zipfile    : extracts the CSV from the downloaded archive
+    - csv        : reads/writes the CSV blacklist file
+  Why:
+    - URLhaus publishes a full ZIP feed rather than plain CSV, so zipfile is
+      required to unpack it before csv can parse it
+
+--------------------------------------------------------------------------------
+behavior_checker.py  [Phase 2]
+--------------------------------------------------------------------------------
+  Purpose   : Simulates a real user visit using a headless browser so that
+              JavaScript-driven redirects and dynamically loaded resources are
+              captured — things a simple HTTP request can never see.
+  What it does:
+    - Launches a headless Chromium browser via Playwright
+    - Navigates to the URL with a realistic User-Agent string
+    - Intercepts every HTTP response to detect redirect chains (3xx status)
+    - Intercepts every outgoing request to collect all external domains contacted
+    - After page load, waits 1.5 s to catch late-firing async requests
+    - Flags any external domain with a suspicious TLD or IP-address hostname
+    - Falls back gracefully (returns safe defaults) if Playwright is unavailable
+  Dependencies:
+    - playwright (pip)          : Python bindings for Playwright
+    - Chromium browser binary   : installed via: python -m playwright install chromium
+    - urllib.parse / re         : URL parsing and TLD inspection
+  Why:
+    - Many scam sites use JavaScript redirects that HTTP-only checkers miss
+    - Playwright is the most reliable cross-browser automation library;
+      it runs a real Chromium so JavaScript executes exactly as in a browser
+    - The 1.5 s wait catches async tracking pixels and beacon calls
+
+--------------------------------------------------------------------------------
+network_checker.py  [Phase 2]
+--------------------------------------------------------------------------------
+  Purpose   : Post-processes the raw external domain list from behavior_checker
+              to produce a structured risk assessment of the site's network
+              footprint.
+  What it does:
+    - Takes behavior_checker's external_requests list as input
+    - Classifies each domain into one of three buckets:
+        safe_infra   : known CDN / infrastructure (Cloudflare, AWS, Google, etc.)
+        suspicious   : bad TLD, IP-based, or excessive subdomain depth
+        unknown      : everything else
+    - Computes risk_level:
+        low    : 0 suspicious domains AND <=20 external domains total
+        medium : 1+ suspicious domain OR >20 external domains total
+        high   : 3+ suspicious domains
+  Dependencies:
+    - re             : regex for IP-address detection
+    - No external pip packages — pure logic layer on top of behavior data
+  Why:
+    - Separating network analysis from behavior capture keeps each module
+      focused and independently testable
+    - CDN whitelist prevents false positives (e.g. sites using Cloudflare)
+
+--------------------------------------------------------------------------------
+privacy_checker.py  [Phase 2]
+--------------------------------------------------------------------------------
+  Purpose   : Measures how aggressively a site profiles its visitors through
+              cookies, third-party scripts, and browser fingerprinting.
+  What it does:
+    - Fetches the page with browser-like headers to get real Set-Cookie headers
+    - Counts all cookies and identifies tracking cookies by name pattern
+      (_ga, _fbp, _hjid, NID, IDE, etc.)
+    - Parses HTML to count third-party script domains
+    - Scans inline JS and external scripts for fingerprinting API calls:
+        canvas (toDataURL), WebGL, AudioContext, navigator.plugins,
+        navigator.hardwareConcurrency, getBattery, RTCPeerConnection, etc.
+    - Assigns a privacy grade: good / moderate / poor / invasive
+  Dependencies:
+    - requests        : fetches headers (Set-Cookie) + HTML body
+    - beautifulsoup4  : parses script tags and their src attributes
+    - re              : regex matching of fingerprinting API patterns
+  Why:
+    - requests is needed because Playwright doesn't expose response cookies in
+      the same structured way; a direct HTTP request gives clean header access
+    - BeautifulSoup reliably finds all <script src="..."> regardless of HTML quality
+    - Fingerprinting is regex-matched in source because it's fast and catches
+      obfuscated calls that a DOM inspector would miss
+
+--------------------------------------------------------------------------------
+tracker_checker.py  [Phase 2]
+--------------------------------------------------------------------------------
+  Purpose   : Identifies named analytics and advertising trackers (e.g. Google
+              Analytics, Facebook Pixel, Hotjar) by matching against a local
+              tracker signature database.
+  What it does:
+    - Loads backend/data/trackers.json at import time (domain -> tracker name map)
+    - Scans <script src>, <iframe src>, <img src>, <link href>, and inline
+      <script> content for matches against tracker domains
+    - Deduplicates and returns: tracker name, matched domain, element type
+  Dependencies:
+    - beautifulsoup4  : parses HTML to extract tag attributes
+    - json / os       : loads trackers.json from disk
+  Why:
+    - A local JSON database means zero network calls and instant lookups
+    - BeautifulSoup covers all tag types including tracking pixels (<img>)
+      and preconnect hints (<link rel="preconnect">)
+    - Inline script scanning catches cases where the tracker URL is embedded
+      in JavaScript rather than a src attribute
 
 
-Frontend (frontend/src/)
-------------------------
+================================================================================
+FRONTEND PANELS (frontend/src/components/)
+================================================================================
 
-Components:
-  App.jsx                        Root component, orchestrates the UI
-  components/UrlInput.jsx        URL input form
-  metrics/AnalysisResult.jsx     Displays scan results (risk score, checks, recommendations)
-  components/AntigravityParams.jsx  Detailed check parameters display
-  components/BlacklistControl.jsx   UI button to trigger manual blacklist updates
+All panels receive their data as a prop from App.jsx (passed down from the
+/analyze API response). They use Framer Motion for entry animations and
+Tailwind CSS v4 for styling.
+
+--------------------------------------------------------------------------------
+BehaviorPanel.jsx  [Phase 2]
+--------------------------------------------------------------------------------
+  Displays  : Results from behavior_checker (runtime headless browser scan)
+  Data fields shown:
+    - redirect_count       : number of HTTP redirects the page triggered
+                             (color coded: green ≤1, yellow 2, red >3)
+    - external_request_count: total external domains contacted
+    - suspicious_domains   : external domains with bad TLDs or IP hosts (red pills)
+    - redirect_chain       : numbered list of each URL in the redirect sequence
+    - page_title           : title of the final page after all redirects
+  UI behaviour:
+    - Panel border turns orange if redirect_count > 2 or suspicious_domains exist
+    - Shows "Runtime analysis unavailable" message if Playwright is not installed
+      (graceful degradation — panel does not crash)
+  Dependencies (frontend):
+    - framer-motion : fade-in + slide-up animation on mount (delay: 0.1 s)
+    - Tailwind CSS  : all utility classes (bg-*, border-*, text-*, rounded-*)
+
+--------------------------------------------------------------------------------
+NetworkPanel.jsx  [Phase 2]
+--------------------------------------------------------------------------------
+  Displays  : Results from network_checker (external domain classification)
+  Data fields shown:
+    - external_domain_count     : total unique external domains
+    - safe_infra_domains.length : count of known CDN/infra domains (green)
+    - suspicious_external_count : count of suspicious domains (red if > 0)
+    - risk_level badge          : Low Risk / Medium Risk / High Risk
+    - Expandable list           : all external domains with colour-coded dots
+                                  🟢 safe infra  ⚪ unknown  🔴 suspicious
+  UI behaviour:
+    - Panel border colour matches risk level (green / yellow / red)
+    - Domain list is hidden by default; revealed via <details> toggle
+  Dependencies (frontend):
+    - framer-motion : fade-in animation (delay: 0.3 s)
+    - Tailwind CSS  : utility styling
+
+--------------------------------------------------------------------------------
+PrivacyPanel.jsx  [Phase 2]
+--------------------------------------------------------------------------------
+  Displays  : Results from privacy_checker (cookie, script, fingerprint audit)
+  Data fields shown:
+    - privacy_grade         : good 🟢 / moderate 🟡 / poor 🟠 / invasive 🔴
+    - privacyScore bar      : animated 0-10 exposure progress bar
+                              (score = tracking_cookies×1.5 + 3P_scripts×0.5
+                               + fingerprint_score×1.5, capped at 10)
+    - cookie_count          : total cookies set
+    - tracking_cookie_count : cookies matching known tracking patterns
+    - third_party_script_count: scripts loaded from external domains
+    - fingerprinting_score  : 0-5 count of unique fingerprinting techniques
+    - fingerprinting_signals: named techniques with icons
+                              (canvas🎨, webgl🖥️, audio🔊, webrtc📡, etc.)
+    - tracking_cookie_names : expandable list of identified cookie names
+  UI behaviour:
+    - Exposure bar animates from 0 → actual score on mount (0.8 s ease-out)
+    - Panel border colour matches privacy grade
+    - Fingerprinting chips only appear if signals were detected
+  Dependencies (frontend):
+    - framer-motion : animated progress bar + panel entrance (delay: 0.4 s)
+    - Tailwind CSS  : utility styling
+
+--------------------------------------------------------------------------------
+TrackerPanel.jsx  [Phase 2]
+--------------------------------------------------------------------------------
+  Displays  : Results from tracker_checker (named tracker identification)
+  Data fields shown:
+    - tracker_count    : badge showing total trackers found
+                         (green ≤4, yellow 5-8, red >8)
+    - tracker_details  : list of each tracker with:
+        name           : human-readable name (e.g. "Google Analytics")
+        domain         : matched domain (e.g. google-analytics.com)
+        element        : HTML element where it was found, with icon
+                         📜 script  🪟 iframe  🖼️ img  🔗 link  💻 inline_script
+  UI behaviour:
+    - Shows "No known trackers detected" if list is empty
+    - Panel border colour scales with count (green / yellow / red)
+  Dependencies (frontend):
+    - framer-motion : fade-in animation (delay: 0.2 s)
+    - Tailwind CSS  : utility styling
 
 
-Key Features
-------------
-  - Real-time URL scanning with multi-factor analysis
-  - Risk scoring (0-100) with classification: Safe / Suspicious / Caution / Fraudulent
-  - 7 independent checks: Blacklist, WHOIS, SSL, DNS (MX/SPF), URL patterns, content trust, urgency detection
-  - Auto-updating blacklist from URLhaus (every 24 hours + manual trigger)
-  - Global error handling — always returns JSON, never HTML stack traces
+================================================================================
+TECH STACK SUMMARY
+================================================================================
+  Backend  : Python 3, Flask, flask-cors, requests, python-whois,
+             beautifulsoup4, tldextract, dnspython, textstat,
+             Playwright + Chromium (headless browser runtime)
+  Frontend : React 19, Vite 7, Tailwind CSS v4 (@tailwindcss/postcss),
+             Framer Motion, Axios
 
 
-Tech Stack
-----------
-  Backend  : Python, Flask, requests, python-whois
-  Frontend : React (Vite), Framer Motion, Axios
+================================================================================
+HOW TO RUN
+================================================================================
 
+  1. Backend
+     --------
+     cd backend
+     python -m venv venv
+     venv\Scripts\activate          # Windows
+     pip install -r requirements.txt
+     python -m playwright install chromium   # downloads ~170 MB Chromium binary
+     python app.py                  # starts Flask on http://127.0.0.1:5000
 
-How to Run
-----------
-  1. Backend:  cd backend  ->  python -m venv venv  ->  venv\Scripts\activate  ->  pip install -r requirements.txt  ->  python app.py
-  2. Frontend: cd frontend ->  npm install  ->  npm run dev
+  2. Frontend
+     ---------
+     cd frontend
+     npm install                    # installs React, Tailwind, Framer Motion, etc.
+     npm run dev                    # starts Vite dev server on http://localhost:5173
+
+  NOTE: If you skip the playwright install step, the Behavior Analysis panel will
+  display "Runtime analysis unavailable" instead of crashing — all other panels
+  will still work normally.
