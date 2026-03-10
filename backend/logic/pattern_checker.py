@@ -40,10 +40,17 @@ def check_patterns(url):
     }
 
     # Check for suspicious keywords in domain or subdomain
+    # Only match if the keyword appears WITH its hyphen (e.g., "google-" not just "google")
     for keyword in SUSPICIOUS_DOMAIN_KEYWORDS:
-        # Match as substring (case-insensitive already lowercased above)
-        if keyword.rstrip("-") in domain or keyword.rstrip("-") in subdomain:
-            findings["keywords"].append(keyword.rstrip("-"))
+        # Check for the keyword WITH hyphen for compound words
+        if "-" in keyword:
+            if keyword in domain or keyword in subdomain:
+                findings["keywords"].append(keyword)
+        else:
+            # For keywords without hyphens, only match whole word boundaries
+            # to avoid false positives like "google" in legitimate domains
+            if re.search(r'\b' + re.escape(keyword) + r'\b', domain + '-' + subdomain):
+                findings["keywords"].append(keyword)
 
     # Check for excessive hyphens (more than 2 hyphens is unusual for legitimate domains)
     if domain.count("-") > 2 or subdomain.count("-") > 2:

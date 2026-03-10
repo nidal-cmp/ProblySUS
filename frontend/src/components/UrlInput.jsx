@@ -1,7 +1,13 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 
-const UrlInput = ({ onAnalyze, loading }) => {
+const UrlInput = ({ onAnalyze, loading, initialUrl }) => {
     const [url, setUrl] = useState('')
+
+    useEffect(() => {
+        if (initialUrl) {
+            setUrl(initialUrl)
+        }
+    }, [initialUrl])
 
     const handleSubmit = (e) => {
         e.preventDefault()

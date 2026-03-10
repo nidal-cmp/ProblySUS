@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>ProblySUS Scanner</title>
+    <link rel="stylesheet" href="popup.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="logo-circle">
+                <span class="shield-icon" style="font-size: 24px;">🛡️</span>
+            </div>
+            <h2>ProblySUS</h2>
+            <p class="subtitle">Quick URL Analysis</p>
+        </div>
+
+        <!-- New Top Link Header -->
+        <div class="url-header hidden" id="url-header">
+            <span class="url-icon">🔗</span>
+            <span class="url-text" id="url-display">Scanning active tab...</span>
+        </div>
+
+        <button id="scan-btn" class="scan-btn">
+            <span class="scan-icon">🔍</span> Scan This Site
+        </button>
+
+        <div id="loading" class="loading hidden">
+            <div class="spinner"></div>
+            <p>Analyzing...</p>
+        </div>
+
+        <div id="result-container" class="result-container hidden">
+            <!-- Arc Score Section -->
+            <div class="score-section">
+                <div class="score-arc-container">
+                    <div class="score-arc-track"></div>
+                    <div class="score-arc-fill" id="score-arc"></div>
+                    <div class="score-value-large" id="score-value">0</div>
+                </div>
+                <h3 id="risk-label" class="risk-label-centered uppercase">UNKNOWN</h3>
+                <p id="recommendation" class="recommendation-centered"></p>
+            </div>
+
+            <!-- 4-Column Metrics -->
+            <div class="metrics-row">
+                <div class="metric-col">
+                    <div class="metric-icon" id="icon-ssl">🔒</div>
+                    <div class="metric-title" id="detail-ssl">HTTPS</div>
+                    <div class="metric-sub">SSL</div>
+                </div>
+                <div class="metric-col">
+                    <div class="metric-icon highlight-blue">📅</div>
+                    <div class="metric-title" id="detail-age">-</div>
+                    <div class="metric-sub">AGE</div>
+                </div>
+                <div class="metric-col">
+                    <div class="metric-icon highlight-green" id="icon-blacklist">✅</div>
+                    <div class="metric-title" id="detail-blacklist">Clean</div>
+                    <div class="metric-sub">BLACKLIST</div>
+                </div>
+                <div class="metric-col">
+                    <div class="metric-icon highlight-red" id="icon-mx">❌</div>
+                    <div class="metric-title" id="detail-mx">None</div>
+                    <div class="metric-sub">EMAIL</div>
+                </div>
+            </div>
+
+            <!-- Navigation Tabs -->
+            <div class="tabs-row">
+                <div class="tab-item active"><span class="tab-icon">🛡️</span> Findings</div>
+                <div class="tab-item"><span class="tab-icon">🔍</span> Behavior</div>
+                <div class="tab-item"><span class="tab-icon">🌐</span> Network</div>
+                <div class="tab-item"><span class="tab-icon">🔒</span> Privacy</div>
+            </div>
+
+            <!-- Findings List -->
+            <div id="tab-security" class="tab-content active">
+                <div class="findings-list">
+                    <ul id="reasons-ul"></ul>
+                </div>
+            </div>
+
+            <!-- Behavior Content -->
+            <div id="tab-behavior" class="tab-content hidden">
+                <div class="findings-list">
+                    <ul id="behavior-ul">
+                        <li class="text-muted">No behavior data.</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- Network Content -->
+            <div id="tab-network" class="tab-content hidden">
+                <div class="network-overview">
+                    <div class="overview-header">
+                        <h4>Network Overview</h4>
+                        <span id="risk-badge" class="risk-badge safe">Low Risk</span>
+                    </div>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-number" id="external-count">0</div>
+                            <div class="stat-label">External</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-number safe" id="cdn-count">0</div>
+                            <div class="stat-label">CDN/Infra</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-number" id="suspicious-count">0</div>
+                            <div class="stat-label">Suspicious</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="trackers-section">
+                    <div class="trackers-header">
+                        <h4>🔍 Trackers</h4>
+                        <span id="tracker-badge" class="tracker-badge">0 found</span>
+                    </div>
+                    <div id="trackers-list" class="trackers-list">
+                        <li class="text-muted">No trackers found.</li>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Privacy Content -->
+            <div id="tab-privacy" class="tab-content hidden">
+                <div class="findings-list">
+                    <ul id="privacy-ul">
+                        <li class="text-muted">No privacy data.</li>
+                    </ul>
+                </div>
+            </div>
+
+            <!-- Footer Link -->
+            <div class="footer-link-container">
+                <a href="#" id="full-report-btn" class="footer-link">Open full analysis in ProblySUS ↗</a>
+            </div>
+        </div>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+
+</html>

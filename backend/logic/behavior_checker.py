@@ -56,7 +56,7 @@ def _safe_defaults():
     }
 
 
-def analyze_behavior(url):
+def analyze_behavior(url, html_content=None):
     """
     Analyze runtime behavior of a website using a headless browser.
 
@@ -101,6 +101,7 @@ def analyze_behavior(url):
                 ignore_https_errors=True,
             )
             page = context.new_page()
+            initial_url = url
 
             # Track redirects
             def on_response(response):
@@ -109,6 +110,15 @@ def analyze_behavior(url):
                     redirect_chain.append(response.url)
 
             page.on("response", on_response)
+            
+            # Track frame navigations (catches client-side redirects like meta refresh, js redirects)
+            def on_framenavigated(frame):
+                if frame == page.main_frame:  # only main frame
+                    frame_url = frame.url
+                    if frame_url not in redirect_chain and frame_url != initial_url:
+                        redirect_chain.append(frame_url)
+            
+            page.on("framenavigated", on_framenavigated)
 
             # Track all network requests
             def on_request(request):
@@ -127,16 +137,31 @@ def analyze_behavior(url):
 
             page.on("request", on_request)
 
-            # Navigate with timeout
-            page.goto(url, wait_until="domcontentloaded", timeout=8000)
+            # Navigate with timeout (reduced from 8000ms to 5000ms)
+            page.goto(url, wait_until="domcontentloaded", timeout=5000)
 
-            # Brief wait to capture late-firing requests
-            page.wait_for_timeout(1500)
+            # Capture title immediately before any redirects destroy context
+            try:
+                result["page_title"] = page.title() or None
+                result["final_url"] = page.url
+            except Exception as ctx_err:
+                logger.warning(f"Context destroyed while capturing title (likely redirect): {ctx_err}")
+                result["page_title"] = None
+                # Try to get final URL if possible
+                try:
+                    result["final_url"] = page.url
+                except:
+                    result["final_url"] = url
 
-            result["page_title"] = page.title() or None
-            result["final_url"] = page.url
+            # Wait to capture any external requests (do this after title capture)
+            try:
+                page.wait_for_timeout(3000)  # Increased to 3s to catch client-side redirects
+            except:
+                pass
 
             browser.close()
+            
+            logger.debug(f"Redirect tracking for {url}: chain={redirect_chain}, title={result['page_title']}, final={result['final_url']}, count={result['redirect_count']}")
 
         # Also count the main navigation redirects (URL changed)
         if result["final_url"] and result["final_url"] != url:
@@ -144,6 +169,38 @@ def analyze_behavior(url):
                 redirect_chain.insert(0, url)
             if result["final_url"] not in redirect_chain:
                 redirect_chain.append(result["final_url"])
+
+        # Check for meta refresh redirects in HTML content
+        if html_content and '<meta http-equiv="refresh"' in html_content.lower():
+            # If we have meta refresh but no redirects detected, count it as a redirect
+            if len(redirect_chain) <= 1:
+                redirect_chain.append(result["final_url"] or url)
+                logger.debug(f"Meta refresh detected in HTML for {url}")
+
+        # Check for JavaScript redirects in HTML content
+        if html_content and any(js_redirect in html_content.lower() for js_redirect in [
+            'window.location', 'location.href', 'location.replace', 'location.assign'
+        ]):
+            if len(redirect_chain) <= 1:
+                redirect_chain.append(result["final_url"] or url)
+                logger.debug(f"JavaScript redirect detected in HTML for {url}")
+
+        # Check for client-side navigation patterns
+        if html_content and any(nav_pattern in html_content.lower() for nav_pattern in [
+            'history.pushstate', 'history.replacestate', 'popstate',
+            'hashchange', 'pushstate'
+        ]):
+            if len(redirect_chain) <= 1:
+                redirect_chain.append(result["final_url"] or url)
+                logger.debug(f"Client-side navigation detected in HTML for {url}")
+
+        # Fallback: if title suggests redirecting and URL changed, count as redirect
+        if (result["page_title"] and 
+            result["page_title"].lower() in ("redirecting...", "redirect", "loading", "please wait") and
+            result["final_url"] and result["final_url"] != url):
+            if len(redirect_chain) <= 1:
+                redirect_chain.append(result["final_url"])
+                logger.debug(f"Fallback redirect detection for {url}: title='{result['page_title']}', URL changed")
 
         result["redirect_count"] = max(0, len(redirect_chain) - 1)
         result["redirect_chain"] = redirect_chain[:10]  # Cap for sanity
