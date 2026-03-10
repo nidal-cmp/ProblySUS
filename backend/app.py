@@ -4,6 +4,7 @@ import logging
 import threading
 import datetime
 from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor
 
 # Logic Modules — Original
 from logic.validator import validate_url, check_https_ssl
@@ -31,6 +32,10 @@ logger = logging.getLogger(__name__)
 
 # Constants
 MAX_URL_LENGTH = 2048
+
+# Performance settings
+BEHAVIOR_ANALYSIS_TIMEOUT = 6  # seconds (reduced from ~9.5s)
+FAST_MODE_MAX_TIME = 8  # seconds for fast mode
 
 
 # -----------------------------------------------------------------------
@@ -105,12 +110,15 @@ def analyze_url():
     """
     Analyze a given URL for scam risk.
     Runs 10 analysis modules and returns a composite risk assessment.
+
+    Optional query parameter: ?fast=true for quicker analysis (skips behavior analysis)
     """
     data = request.get_json(silent=True)
     if not data or "url" not in data:
         return jsonify({"error": "Request body must be JSON with a 'url' field"}), 400
 
     url = data["url"]
+    fast_mode = request.args.get('fast', 'false').lower() == 'true'
 
     # --- Input guards ---
     if not isinstance(url, str):
@@ -130,39 +138,70 @@ def analyze_url():
     if not hostname:
         return jsonify({"error": "Could not extract a valid hostname from the URL"}), 400
 
-    # 2. Run original checks
+    # 2. Run original checks (some can be parallelized)
+    logger.info(f"Running analysis for {hostname}...")
+
+    # Fast synchronous checks first
     is_https, https_details = check_https_ssl(valid_url)
-    age_days, creation_date = check_domain_age(hostname)
-    dns_results = check_dns_records(hostname)
     patterns = check_patterns(valid_url)
-    content_analysis = check_content_trust(valid_url)
     is_blacklisted = check_blacklist(hostname)
 
-    # 3. Run new analyzer modules
-    logger.info(f"Running extended analysis for {hostname}...")
+    # 3. Run slower checks in parallel (HTML fetch, WHOIS, DNS, Content, Tracker, Privacy) using ThreadPoolExecutor
+    def fetch_html():
+        """Fetch HTML content with timeout handling."""
+        try:
+            import requests as req_lib
+            resp = req_lib.get(valid_url, timeout=5, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            }, verify=True, allow_redirects=True)
+            return resp.text
+        except Exception as fetch_err:
+            logger.warning(f"Could not fetch HTML: {fetch_err}")
+            return None
 
-    # Behavior analysis (headless browser — redirect/network monitoring)
-    behavior_result = analyze_behavior(valid_url)
+    # Create a pool with enough workers for all tasks (plus HTML fetching)
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        whois_future = executor.submit(check_domain_age, hostname)
+        dns_future = executor.submit(check_dns_records, hostname)
+        html_future = executor.submit(fetch_html)
 
-    # Fetch HTML once for tracker + privacy analysis (re-use content_checker's fetch)
-    html_content = None
-    try:
-        import requests as req_lib
-        resp = req_lib.get(valid_url, timeout=8, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        }, verify=True, allow_redirects=True)
-        html_content = resp.text
-    except Exception as fetch_err:
-        logger.warning(f"Could not fetch HTML for extended analysis: {fetch_err}")
+        # wait for HTML so we can use it for dependent tasks
+        try:
+            html_content = html_future.result(timeout=6)
+        except Exception:
+            html_content = None
 
-    # Tracker detection
-    tracker_result = detect_trackers(html_content or "")
+        # submit analysis tasks that depend on HTML
+        content_future = executor.submit(check_content_trust, valid_url, html_content=html_content)
+        tracker_future = executor.submit(detect_trackers, html_content or "")
+        privacy_future = executor.submit(analyze_privacy, valid_url, html_content=html_content)
 
-    # Network intelligence (processes behavior_checker output)
+        # while the above run in background, perform behavior analysis on main thread
+        if fast_mode:
+            behavior_result = {
+                "redirect_count": 0,
+                "redirect_chain": [],
+                "external_request_count": 0,
+                "external_requests": [],
+                "suspicious_domains": [],
+                "page_title": None,
+                "final_url": None,
+                "error": "Skipped in fast mode"
+            }
+            logger.info("Skipping behavior analysis in fast mode")
+        else:
+            behavior_result = analyze_behavior(valid_url, html_content=html_content)
+
+        # retrieve remaining results
+        age_days, creation_date = whois_future.result(timeout=10)
+        dns_results = dns_future.result(timeout=10)
+        content_analysis = content_future.result(timeout=10)
+        tracker_result = tracker_future.result(timeout=10)
+        privacy_result = privacy_future.result(timeout=10)
+
+
+    # 4. Run analysis modules using fetched content (results from futures already collected above)
     network_result = analyze_network(behavior_result)
-
-    # Privacy analysis
-    privacy_result = analyze_privacy(valid_url, html_content=html_content)
 
     # 4. Combine all results for scoring
     check_results = {
@@ -176,6 +215,7 @@ def analyze_url():
         "network": network_result,
         "trackers": tracker_result,
         "privacy": privacy_result,
+        "html_content": html_content,  # For malicious script detection
     }
 
     score, label, reasons = calculate_risk_score(check_results)
@@ -227,6 +267,7 @@ def analyze_url():
             "privacy": privacy_result,
         },
         "timestamp": datetime.datetime.now().isoformat(),
+        "fastMode": fast_mode,
     }
 
     return jsonify(result), 200

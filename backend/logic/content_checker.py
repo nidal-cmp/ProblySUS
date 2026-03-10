@@ -33,9 +33,10 @@ BROWSER_HEADERS = {
 }
 
 
-def check_content_trust(url):
+def check_content_trust(url, html_content=None):
     """
     Analyzes page content for trust signals and scam patterns.
+    Can accept pre-fetched HTML content to avoid duplicate requests.
     Returns a dict of analysis results.
     """
     findings = {
@@ -48,15 +49,21 @@ def check_content_trust(url):
     }
 
     try:
-        response = requests.get(
-            url,
-            timeout=8,
-            headers=BROWSER_HEADERS,
-            verify=True,
-            allow_redirects=True,
-        )
-        findings["reachable"] = True
-        soup = BeautifulSoup(response.text, "html.parser")
+        if html_content is None:
+            # Fetch content if not provided
+            response = requests.get(
+                url,
+                timeout=5,  # Reduced from 8s to 5s
+                headers=BROWSER_HEADERS,
+                verify=True,
+                allow_redirects=True,
+            )
+            findings["reachable"] = True
+            soup = BeautifulSoup(response.text, "html.parser")
+        else:
+            # Use provided HTML content
+            findings["reachable"] = True
+            soup = BeautifulSoup(html_content, "html.parser")
 
         # 1. Trust Pages Check
         links = soup.find_all("a", href=True)

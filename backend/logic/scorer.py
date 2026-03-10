@@ -22,12 +22,18 @@ Weight budget (excluding blacklist override):
     Network           |  10         | External domain risk profile
     Trackers          |   2         | Trackers are normal; excessive = mild privacy concern
     Privacy           |   2         | Fingerprinting, tracking cookies
+    Malicious scripts |  10         | Credential stealers, miners, obfuscated code
     ------------------|-------------|
     TOTAL (soft max)  | 100         |
 
 The actual score can exceed individual category limits via compound signals
 (e.g. sensitive data + no SSL = extra penalty). Final score is capped at 100.
 """
+
+import re
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_risk_score(check_results):
@@ -182,19 +188,33 @@ def calculate_risk_score(check_results):
     if behavior and not behavior.get("error"):
         behavior_score = 0
         redirect_count = behavior.get("redirect_count", 0)
+        page_title = behavior.get("page_title")
         suspicious_domains = behavior.get("suspicious_domains", [])
         external_count = behavior.get("external_request_count", 0)
 
         # Redirect analysis
-        if redirect_count >= 5:
+        # Note: 5-6 redirects are normal for legitimate auth flows (Gmail, OAuth, etc)
+        # Only heavily penalize if HTTPS is missing or title suggests phishing
+        if redirect_count >= 10:
             behavior_score += 8
-            reasons.append(f"⚠️ Excessive redirects detected ({redirect_count} redirects)")
-        elif redirect_count >= 3:
+            reasons.append(f"⚠️ Excessive redirects detected ({redirect_count} redirects) — possible redirect chain attack")
+        elif redirect_count >= 7:
             behavior_score += 4
             reasons.append(f"⚠️ Multiple redirects detected ({redirect_count} redirects)")
-        elif redirect_count >= 1:
+        elif redirect_count >= 3:
             behavior_score += 1
             reasons.append(f"ℹ️ Page redirects detected ({redirect_count})")
+        
+        # Redirect without proper page title is suspicious (possible credential harvesting)
+        # Consider titles like "Redirecting...", empty, or very short as suspicious
+        is_invalid_title = (
+            not page_title or 
+            page_title.lower() in ("redirecting...", "redirect", "loading", "") or
+            len(str(page_title).strip()) < 3
+        )
+        if redirect_count > 0 and is_invalid_title:
+            behavior_score += 6
+            reasons.append(f"⚠️ Page redirected but invalid/missing title — possible stealth redirect or credential harvesting")
 
         # Suspicious domains contacted at runtime
         if len(suspicious_domains) >= 3:
@@ -209,9 +229,11 @@ def calculate_risk_score(check_results):
             behavior_score += 3
             reasons.append(f"⚠️ Heavy external network activity ({external_count} external requests)")
 
-        score += min(15, behavior_score)
+        score += min(18, behavior_score)  # Increased from 15 to 18 to allow for redirect+no-title penalty
     elif behavior and behavior.get("error"):
-        reasons.append("ℹ️ Behavior analysis unavailable — runtime checks skipped")
+        # Behavior analysis failed — suspicious, add penalty
+        score += 4
+        reasons.append("⚠️ Behavior analysis failed — unable to verify runtime behavior")
 
     # ================================================================
     # 8. NETWORK INTELLIGENCE  (max: 10)   [NEW]
@@ -275,8 +297,76 @@ def calculate_risk_score(check_results):
                 reasons.append(f"ℹ️ Elevated tracking cookies ({tracking_cookies})")
 
     # ================================================================
-    # COMPOUND SIGNALS — Cross-category amplifiers
+    # 11. MALICIOUS SCRIPT DETECTION  (max: 10)   [NEW]
     # ================================================================
+    script_score = 0
+    html_content = check_results.get("html_content", "")
+    
+    if html_content:
+        # Check for credential stealing patterns
+        credential_patterns = [
+            r'password.*value', r'username.*value', r'email.*value',
+            r'document\.cookie', r'localStorage', r'sessionStorage',
+            r'XMLHttpRequest.*password', r'fetch.*password'
+        ]
+        
+        credential_matches = sum(1 for pattern in credential_patterns 
+                               if re.search(pattern, html_content, re.IGNORECASE))
+        if credential_matches > 0:
+            script_score += min(4, credential_matches * 2)
+            reasons.append(f"⚠️ Potential credential harvesting scripts detected ({credential_matches} patterns)")
+        
+        # Check for crypto mining patterns
+        mining_patterns = [
+            r'coinhive', r'cryptonight', r'monero', r'mining',
+            r'webminer', r'cryptojacking', r'cpu.*mine'
+        ]
+        
+        mining_matches = sum(1 for pattern in mining_patterns 
+                           if re.search(pattern, html_content, re.IGNORECASE))
+        if mining_matches > 0:
+            script_score += min(3, mining_matches * 2)
+            reasons.append(f"⛔ Crypto mining scripts detected ({mining_matches} patterns)")
+        
+        # Check for obfuscated scripts (suspicious patterns)
+        obfuscation_patterns = [
+            r'eval\(', r'Function\(', r'setTimeout.*eval',
+            r'document\.write.*script', r'fromCharCode',
+            r'unescape\(', r'decodeURIComponent.*eval'
+        ]
+        
+        obfuscation_matches = sum(1 for pattern in obfuscation_patterns 
+                                if re.search(pattern, html_content, re.IGNORECASE))
+        
+        # Context-aware obfuscation penalty
+        if obfuscation_matches > 0:
+            if domain_age != -1 and domain_age < 90:
+                # New domain + obfuscation -> Significant penalty
+                penalty = min(8, obfuscation_matches * 2)
+                script_score += penalty
+                reasons.append(f"⛔ Obfuscated scripts on a NEW domain ({obfuscation_matches} patterns) — high risk of malware")
+            else:
+                # Old/Unknown domain + obfuscation -> Low/No penalty
+                if obfuscation_matches > 3:
+                    script_score += 2
+                    reasons.append(f"ℹ️ Multiple obfuscated script patterns detected ({obfuscation_matches}) — common in minified JS/trackers")
+                else:
+                    reasons.append(f"✅ Minor script patterns detected ({obfuscation_matches}) — considered normal for established domains")
+        
+        # Check for redirect scripts
+        redirect_patterns = [
+            r'window\.location', r'location\.href', r'location\.replace',
+            r'<meta.*refresh', r'setTimeout.*location'
+        ]
+        
+        redirect_matches = sum(1 for pattern in redirect_patterns 
+                             if re.search(pattern, html_content, re.IGNORECASE))
+        if redirect_matches > 0 and redirect_count == 0:
+            # If we detect redirect scripts but no redirects were caught, add penalty
+            script_score += 2
+            reasons.append(f"⚠️ Client-side redirect scripts detected but no redirects observed")
+    
+    score += min(10, script_score)
     # New domain + suspicious behavior = amplified risk
     if domain_age != -1 and domain_age < 30:
         if behavior and behavior.get("redirect_count", 0) >= 3:

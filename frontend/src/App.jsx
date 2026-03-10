@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import axios from 'axios'
 import UrlInput from './components/UrlInput'
 import AnalysisResult from './metrics/AnalysisResult'
@@ -10,6 +10,18 @@ function App() {
   const [result, setResult] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+
+  // Read URL from params for deep linking
+  const [initialUrl, setInitialUrl] = useState('')
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const urlParam = params.get('url')
+    if (urlParam) {
+      setInitialUrl(urlParam)
+      handleAnalyze(urlParam)
+    }
+  }, [])
 
   const handleAnalyze = async (url) => {
     setLoading(true)
@@ -40,7 +52,7 @@ function App() {
           </p>
         </div>
 
-        <UrlInput onAnalyze={handleAnalyze} loading={loading} />
+        <UrlInput onAnalyze={handleAnalyze} loading={loading} initialUrl={initialUrl} />
 
         {error && (
           <div className="mt-8 p-4 bg-red-500/10 border border-red-500/20 rounded-lg text-red-200 flex items-center shadow-lg backdrop-blur-md">
