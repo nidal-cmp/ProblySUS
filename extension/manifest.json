@@ -5,7 +5,9 @@
     "description": "Scans the current URL for potential scam risks using the local ProblySUS backend.",
     "permissions": [
         "activeTab",
-        "scripting"
+        "scripting",
+        "tabs",
+        "storage"
     ],
     "action": {
         "default_popup": "popup.html",

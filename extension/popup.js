@@ -2,7 +2,6 @@
 document.addEventListener('DOMContentLoaded', async () => {
   const urlHeader = document.getElementById('url-header');
   const urlDisplay = document.getElementById('url-display');
-  const scanBtn = document.getElementById('scan-btn');
   const loadingDiv = document.getElementById('loading');
   const resultContainer = document.getElementById('result-container');
 
@@ -22,6 +21,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   const iconMx = document.getElementById('icon-mx');
 
   const fullReportBtn = document.getElementById('full-report-btn');
+  
+  // Helper to normalize URL for storage keys (matches background.js)
+  function getNormalizedUrl(url) {
+    try {
+      const u = new URL(url);
+      // Strip protocol, www., and trailing slashes. Keep path and domain.
+      let domain = u.hostname.toLowerCase();
+      if (domain.startsWith('www.')) domain = domain.substring(4);
+      let path = u.pathname.replace(/\/+$/, '');
+      return `${domain}${path}`;
+    } catch (e) {
+      return url.toLowerCase();
+    }
+  }
 
   // 1. Get current active tab URL
   let currentTabUrl = '';
@@ -50,55 +63,73 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
 
-      // Show scan button
+      // Show current URL
       urlHeader.classList.remove('hidden');
       urlDisplay.textContent = currentTabUrl.length > 40 ? currentTabUrl.substring(0, 37) + '...' : currentTabUrl;
-      scanBtn.classList.remove('hidden');
-
+      
+      // 1.5 Check if results already exist in storage (from auto-scan)
+      const normUrl = getNormalizedUrl(currentTabUrl);
+      const storageKey = `scan_${normUrl}`;
+      const stored = await chrome.storage.local.get(storageKey);
+      
+      if (stored[storageKey]) {
+        console.log("Loading stored result from auto-scan");
+        displayResults(stored[storageKey].data);
+      } else {
+        // Trigger scan immediately if no results found
+        runScan();
+      }
     }
   } catch (err) {
-    urlHeader.classList.remove('hidden');
-    urlDisplay.textContent = 'Error reading tab info.';
+    console.error("Popup init error:", err);
+    showError("Failed to initialize scanner. Please try again.");
   }
-
-  // 2. Scan Button Logic
-  scanBtn.addEventListener('click', runScan);
 
   function runScan() {
     if (!currentTabUrl) return;
 
+    // Clear previous errors
+    const existingErr = document.getElementById('error-msg');
+    if (existingErr) existingErr.remove();
+
     urlHeader.classList.add('hidden');
-    scanBtn.classList.add('hidden');
     resultContainer.classList.add('hidden');
     loadingDiv.classList.remove('hidden');
 
-    try {
-      chrome.runtime.sendMessage(
-        { action: "analyze_url", url: currentTabUrl },
-        (response) => {
-          loadingDiv.classList.add('hidden');
+    const normUrl = getNormalizedUrl(currentTabUrl);
+    
+    // Polling mechanism to check storage periodically
+    const pollInterval = setInterval(async () => {
+      const storageKey = `scan_${normUrl}`;
+      const stored = await chrome.storage.local.get(storageKey);
+      if (stored[storageKey]) {
+        clearInterval(pollInterval);
+        displayResults(stored[storageKey].data);
+      }
+    }, 1000);
 
-          if (chrome.runtime.lastError || !response) {
-            showError("Could not connect to the extension background process.");
-            return;
-          }
+    // Stop polling after 15 seconds
+    setTimeout(() => clearInterval(pollInterval), 15000);
 
-          if (response.error) {
-            showError(response.error);
-            return;
-          }
-
-          if (response.data) {
-            displayResults(response.data);
-          } else {
-            showError("Unknown error occurred during analysis.");
-          }
+    chrome.runtime.sendMessage(
+      { action: "analyze_url", url: currentTabUrl },
+      (response) => {
+        // We don't hide loadingDiv immediately here because the polling might still be waiting
+        if (chrome.runtime.lastError) {
+          console.log("Message error (might be okay if polling works)");
+          return;
         }
-      );
-    } catch (err) {
-      loadingDiv.classList.add('hidden');
-      showError(err.message || 'Failed to scan URL.');
-    }
+
+        if (response && response.data) {
+          clearInterval(pollInterval);
+          displayResults(response.data);
+        } else if (response && response.error) {
+          clearInterval(pollInterval);
+          loadingDiv.classList.add('hidden');
+          showError(response.error);
+        }
+      }
+    );
   }
 
   // Open full report
@@ -108,11 +139,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   function showError(msg) {
+    // Prevent duplicate errors
+    const existing = document.getElementById('error-msg');
+    if (existing) existing.remove();
+
     urlHeader.classList.remove('hidden');
     urlDisplay.textContent = currentTabUrl;
-    scanBtn.classList.remove('hidden');
 
     const errDiv = document.createElement('div');
+    errDiv.id = 'error-msg';
     errDiv.style.backgroundColor = 'var(--danger-glow)';
     errDiv.style.border = '1px solid var(--danger)';
     errDiv.style.borderRadius = '8px';
@@ -136,6 +171,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   function displayResults(data) {
+    if (!data) return;
+    
+    // Hide loading states
+    loadingDiv.classList.add('hidden');
+    const existingErr = document.getElementById('error-msg');
+    if (existingErr) existingErr.remove();
+
     urlHeader.classList.remove('hidden');
     urlDisplay.textContent = currentTabUrl.length > 40 ? currentTabUrl.substring(0, 37) + '...' : currentTabUrl;
 

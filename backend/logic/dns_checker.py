@@ -45,7 +45,8 @@ def check_dns_records(domain):
     Checks for MX and SPF records with timeout, caching, and robust fallbacks.
     Returns a dict with results.
     """
-    # Check cache first
+    # Check cache first (case-insensitive)
+    domain = domain.lower()
     with _dns_lock:
         if domain in _dns_cache:
             return _dns_cache[domain]

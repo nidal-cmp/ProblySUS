@@ -13,8 +13,11 @@ def validate_url(url):
     if not url:
         return None, "URL is empty"
 
-    # Strip whitespace
-    url = url.strip()
+    # Strip whitespace and lowercase
+    url = url.strip().lower()
+    
+    # Strip trailing slash(es)
+    url = url.rstrip('/')
 
     # Max length guard
     if len(url) > 2048:

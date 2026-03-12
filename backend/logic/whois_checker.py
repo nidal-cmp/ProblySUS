@@ -15,7 +15,8 @@ def check_domain_age(domain):
     Checks the domain age in days with timeout and caching.
     Returns (age_days, creation_date).
     """
-    # Check cache first
+    # Check cache first (case-insensitive)
+    domain = domain.lower()
     with _cache_lock:
         if domain in _whois_cache:
             return _whois_cache[domain]

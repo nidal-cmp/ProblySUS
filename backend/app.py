@@ -84,7 +84,11 @@ _startup_timer.start()
 # -----------------------------------------------------------------------
 @app.errorhandler(Exception)
 def handle_unexpected_error(e):
-    logger.error(f"Unhandled exception: {e}", exc_info=True)
+    import traceback
+    error_msg = traceback.format_exc()
+    logger.error(f"Unhandled exception: {e}\n{error_msg}")
+    with open("backend_error.log", "a") as f:
+        f.write(f"\n{datetime.datetime.now()} - {e}\n{error_msg}\n")
     return jsonify({"error": "An unexpected server error occurred. Please try again."}), 500
 
 
@@ -133,7 +137,7 @@ def analyze_url():
     if len(url) > MAX_URL_LENGTH:
         return jsonify({"error": f"URL exceeds maximum length of {MAX_URL_LENGTH} characters"}), 400
 
-    # 1. Validation
+    # 1. Validation and Normalization
     valid_url, error = validate_url(url)
     if not valid_url:
         return jsonify({"error": error}), 400
@@ -153,11 +157,14 @@ def analyze_url():
                 # Expired
                 analysis_cache.pop(valid_url, None)
 
-    # Extract hostname — guard against None (e.g. file:// or malformed URLs)
+    # Extract hostname — guard against None
     parsed = urlparse(valid_url)
     hostname = parsed.hostname
     if not hostname:
         return jsonify({"error": "Could not extract a valid hostname from the URL"}), 400
+    
+    # Ensure hostname is lowercased (though validate_url handles the full URL)
+    hostname = hostname.lower()
 
     # 2. Run original checks (some can be parallelized)
     logger.info(f"Running analysis for {hostname}...")
@@ -213,12 +220,36 @@ def analyze_url():
         else:
             behavior_result = analyze_behavior(valid_url, html_content=html_content)
 
-        # retrieve remaining results
-        age_days, creation_date = whois_future.result(timeout=10)
-        dns_results = dns_future.result(timeout=10)
-        content_analysis = content_future.result(timeout=10)
-        tracker_result = tracker_future.result(timeout=10)
-        privacy_result = privacy_future.result(timeout=10)
+        # retrieve remaining results with individual error handling
+        try:
+            age_days, creation_date = whois_future.result(timeout=10)
+        except Exception as e:
+            logger.warning(f"WHOIS check failed or timed out: {e}")
+            age_days, creation_date = -1, None
+
+        try:
+            dns_results = dns_future.result(timeout=10)
+        except Exception as e:
+            logger.warning(f"DNS check failed or timed out: {e}")
+            dns_results = {"mx_records": False, "spf_record": False}
+
+        try:
+            content_analysis = content_future.result(timeout=10)
+        except Exception as e:
+            logger.warning(f"Content analysis failed or timed out: {e}")
+            content_analysis = {"reachable": False, "urgency_score": 0, "trust_pages": []}
+
+        try:
+            tracker_result = tracker_future.result(timeout=10)
+        except Exception as e:
+            logger.warning(f"Tracker detection failed or timed out: {e}")
+            tracker_result = {"tracker_count": 0, "tracker_details": []}
+
+        try:
+            privacy_result = privacy_future.result(timeout=10)
+        except Exception as e:
+            logger.warning(f"Privacy analysis failed or timed out: {e}")
+            privacy_result = {"privacy_grade": "unknown"}
 
 
     # 4. Run analysis modules using fetched content (results from futures already collected above)
