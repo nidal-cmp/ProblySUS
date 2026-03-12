@@ -37,6 +37,11 @@ MAX_URL_LENGTH = 2048
 BEHAVIOR_ANALYSIS_TIMEOUT = 6  # seconds (reduced from ~9.5s)
 FAST_MODE_MAX_TIME = 8  # seconds for fast mode
 
+# Result Cache (Simple in-memory)
+# Format: { url: {"result": data, "expiry": timestamp} }
+analysis_cache = {}
+CACHE_TTL_MINUTES = 30
+
 
 # -----------------------------------------------------------------------
 # Background blacklist auto-updater
@@ -119,6 +124,7 @@ def analyze_url():
 
     url = data["url"]
     fast_mode = request.args.get('fast', 'false').lower() == 'true'
+    force_scan = request.args.get('force', 'false').lower() == 'true'
 
     # --- Input guards ---
     if not isinstance(url, str):
@@ -131,6 +137,21 @@ def analyze_url():
     valid_url, error = validate_url(url)
     if not valid_url:
         return jsonify({"error": error}), 400
+
+    # --- Cache Check ---
+    if not force_scan:
+        cached = analysis_cache.get(valid_url)
+        if cached:
+            expiry = cached.get("expiry")
+            if expiry and datetime.datetime.now() < expiry:
+                logger.info(f"Returning cached result for {valid_url}")
+                # Update timestamp to show it's from cache but fresh-ish
+                result = cached["result"].copy()
+                result["cached"] = True
+                return jsonify(result), 200
+            else:
+                # Expired
+                analysis_cache.pop(valid_url, None)
 
     # Extract hostname — guard against None (e.g. file:// or malformed URLs)
     parsed = urlparse(valid_url)
@@ -268,6 +289,12 @@ def analyze_url():
         },
         "timestamp": datetime.datetime.now().isoformat(),
         "fastMode": fast_mode,
+    }
+
+    # Store in cache
+    analysis_cache[valid_url] = {
+        "result": result,
+        "expiry": datetime.datetime.now() + datetime.timedelta(minutes=CACHE_TTL_MINUTES)
     }
 
     return jsonify(result), 200

@@ -94,11 +94,16 @@ const AnalysisResult = ({ data }) => {
                         </div>
                     </div>
 
-                    {/* Quick hostname tag */}
-                    <div className="flex-shrink-0 hidden sm:block">
+                    {/* Quick tags */}
+                    <div className="flex-shrink-0 hidden sm:flex flex-col items-end gap-2">
                         <span className="px-3 py-1 bg-white/5 border border-white/10 rounded-full text-xs text-gray-400 font-mono">
                             {data.hostname}
                         </span>
+                        {data.cached && (
+                            <span className="px-2 py-0.5 bg-blue-500/10 border border-blue-500/30 rounded-md text-[10px] text-blue-400 font-bold uppercase tracking-widest">
+                                Cached Result
+                            </span>
+                        )}
                     </div>
                 </div>
 
