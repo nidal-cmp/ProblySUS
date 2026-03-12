@@ -104,7 +104,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Open full report
   fullReportBtn.addEventListener('click', (e) => {
     e.preventDefault();
-    chrome.tabs.create({ url: 'http://localhost:5173/?url=' + encodeURIComponent(currentTabUrl) });
+    chrome.tabs.create({ url: 'http://localhost:5173/?url=' + encodeURIComponent(currentTabUrl) + '&from=extension' });
   });
 
   function showError(msg) {
