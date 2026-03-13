@@ -58,6 +58,9 @@ def calculate_risk_score(check_results):
     trackers = check_results.get("trackers", {})
     privacy = check_results.get("privacy", {})
 
+    # Defaults for module-specific logic used later
+    redirect_count = behavior.get("redirect_count", 0) if behavior else 0
+
     # ================================================================
     # 1. BLACKLIST — Hard override. Instant Fraudulent. No appeal.
     # ================================================================
